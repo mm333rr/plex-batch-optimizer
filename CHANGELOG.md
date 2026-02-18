@@ -81,3 +81,22 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `"plexwatcher already running — skipping this tick"`. Lock is automatically
   released on process exit. Verified: concurrent-run test showed run2 exiting
   in 0.1s while run1 held the lock for its full 4s duration.
+
+---
+
+## [1.0.0] — 2026-02-17
+
+**Status:** Batch running in production. 2,845 files being processed across /Volumes/tv and /Volumes/movies. Watcher daemon live and guarding both volumes.
+
+### Summary of all changes since v0.9.0
+This release represents the complete, production-hardened system:
+
+- Shared core (`plexfix.py`) — single source of truth for all encode logic
+- Batch optimizer (`batch_optimize.py`) — 3-pool parallel processor, resume-safe
+- Auto-watcher (`watcher.py`) — launchd periodic daemon for NFS volumes
+- Run lock (`fcntl.LOCK_EX`) — prevents overlapping launchd ticks during long encodes
+- Resource fork filter — skips macOS `._` sidecar files in NFS walker
+- Probe-based subtitle mapping — explicit stream index maps replace broken negative maps
+- Verified against 150-file snag scan before batch run
+- All 7 fix methods safety-tested (T1–T7, 7/7 pass)
+- Index at `.plexfix/manifest.json` — hidden from Plex, mtime+size fingerprints
