@@ -102,6 +102,7 @@ def classify_probe(probe_data: Dict) -> Optional[str]:
     if acodec in ('dts', 'truehd', 'mlp'):                return 'dts'
     if ext in ('.avi', '.wmv', '.rm', '.rmvb', '.flv'):   return 'bad_container_avi'
     if ext in ('.ts', '.m2ts'):                            return 'bad_container_ts'
+    if ext == '.m4v':                                       return 'bad_container_m4v'
     if has_mjpeg:                                          return 'mjpeg'
     if has_bad_sub:                                        return 'pgs_vobsub'
     return None
@@ -124,6 +125,7 @@ def classify_scan_record(r: Dict) -> Optional[str]:
     if acodec in ('dts', 'truehd', 'mlp'):                 return 'dts'
     if cont in ('.avi', '.wmv', '.rm', '.rmvb', '.flv'):   return 'bad_container_avi'
     if cont in ('.ts', '.m2ts'):                            return 'bad_container_ts'
+    if cont == '.m4v':                                       return 'bad_container_m4v'
     if has_mjpeg:                                           return 'mjpeg'
     if has_bad_sub:                                         return 'pgs_vobsub'
     return None
@@ -133,7 +135,10 @@ def classify_scan_record(r: Dict) -> Optional[str]:
 def output_ext(issue: str, src: str) -> str:
     """Return the correct output file extension for this issue + source."""
     if issue == 'bad_container_avi':  return '.mp4'
-    if issue == 'bad_container_ts':   return '.mkv'
+    if issue in ('bad_container_ts', 'bad_container_m4v'): return '.mkv'
+    # .m4v is iPod/iTunes container — HEVC is not a valid codec tag for it.
+    # Any fix applied to a .m4v must output to .mkv to avoid container mismatch.
+    if Path(src).suffix.lower() == '.m4v': return '.mkv'
     return Path(src).suffix.lower()
 
 # ── ffmpeg command builder ─────────────────────────────────────────────────────
@@ -196,6 +201,18 @@ def build_cmd(issue: str, src: str, dst: str,
     if issue == 'bad_container_ts':
         # Drop timed_id3 data streams, copy A/V to MKV.
         return base + ['-map', '0:v', '-map', '0:a', '-c', 'copy', dst]
+
+    if issue == 'bad_container_m4v':
+        # .m4v (iPod/iTunes container) cannot hold HEVC with a valid codec tag.
+        # Remux to MKV: copy all A/V, preserve text subs, strip data streams
+        # (eia_608 closed-caption, bin_data, etc. have no MKV equivalent tag).
+        return base + [
+            '-map', '0:v:0', '-map', '0:a',
+            *text_sub_maps(probe_data),
+            *attachment_maps(probe_data),
+            '-map', '-0:d',          # strip data/eia_608/bin_data streams
+            '-c', 'copy', dst,
+        ]
 
     if issue == 'av1':
         # AV1 10-bit (yuv420p10le) → H.264 8-bit via libx264.

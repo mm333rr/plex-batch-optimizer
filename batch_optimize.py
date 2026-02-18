@@ -120,6 +120,7 @@ def classify(r: Dict) -> Optional[str]:
     if acodec in ('dts', 'truehd', 'mlp'):                return 'dts'
     if cont in ('.avi', '.wmv', '.rm', '.rmvb', '.flv'):  return 'bad_container_avi'
     if cont in ('.ts', '.m2ts'):                          return 'bad_container_ts'
+    if cont == '.m4v':                                     return 'bad_container_m4v'
     if has_mjpeg:                                         return 'mjpeg'
     if has_bad_sub:                                       return 'pgs_vobsub'
     return None
@@ -127,7 +128,8 @@ def classify(r: Dict) -> Optional[str]:
 def output_ext(issue: str, src: str) -> str:
     """Final output extension for this issue type."""
     if issue == 'bad_container_avi': return '.mp4'
-    if issue == 'bad_container_ts':  return '.mkv'
+    if issue in ('bad_container_ts', 'bad_container_m4v'): return '.mkv'
+    if Path(src).suffix.lower() == '.m4v': return '.mkv'
     return Path(src).suffix          # keep original extension
 
 # ── ffmpeg command builder ─────────────────────────────────────────────────────
@@ -211,6 +213,17 @@ def build_cmd(issue: str, src: str, tmp: str,
     if issue == 'bad_container_ts':
         # Drop timed_id3 data streams, copy A/V only to MKV.
         return base + ['-map', '0:v', '-map', '0:a', '-c', 'copy', tmp]
+
+    if issue == 'bad_container_m4v':
+        # .m4v iPod container can't hold HEVC — no valid codec tag.
+        # Remux A/V + text subs to MKV. -map -0:d strips eia_608/bin_data.
+        pd = probe(src) or {'streams': []}
+        return base + [
+            '-map', '0:v:0', '-map', '0:a',
+            *text_sub_maps(pd), *attachment_maps(pd),
+            '-map', '-0:d',
+            '-c', 'copy', tmp,
+        ]
 
     if issue == 'av1':
         # AV1 10-bit (yuv420p10le) → H.264 8-bit via libx264.
@@ -421,7 +434,7 @@ def main():
     type_filter = set(args.type.split(',')) if args.type else None
     if args.skip_av1:
         type_filter = (type_filter or
-                       {'pgs_vobsub','mjpeg','dts','bad_container_avi','bad_container_ts'}) \
+                       {'pgs_vobsub','mjpeg','dts','bad_container_avi','bad_container_ts','bad_container_m4v'}) \
                        - {'av1'}
 
     # ── Load + classify ────────────────────────────────────────────────────────
@@ -482,7 +495,7 @@ def main():
         return
 
     # ── Thread pools ───────────────────────────────────────────────────────────
-    IO_TYPES    = {'pgs_vobsub', 'mjpeg', 'bad_container_avi', 'bad_container_ts'}
+    IO_TYPES    = {'pgs_vobsub', 'mjpeg', 'bad_container_avi', 'bad_container_ts', 'bad_container_m4v'}
     LIGHT_TYPES = {'dts'}
     # av1 → heavy pool
 
