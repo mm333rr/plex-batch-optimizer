@@ -298,7 +298,8 @@ def walk_volume(volume_root: str, settle_secs: int) -> List[str]:
         dirs[:] = [d for d in dirs
                    if not d.startswith('.') and d != '@eaDir' and d != '#recycle']
         for f in files:
-            if Path(f).suffix.lower() in VIDEO_EXTS:
+            # Skip macOS resource fork sidecars (._filename) and hidden files
+            if not f.startswith('.') and Path(f).suffix.lower() in VIDEO_EXTS:
                 paths.append(os.path.join(root, f))
     return paths
 
