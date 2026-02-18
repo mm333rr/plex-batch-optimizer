@@ -3,3 +3,12 @@ __pycache__/
 *.log
 results/*.log
 .env
+results/scan_results.json
+results/bitrate_audit.json
+results/batch_completed.json
+results/batch_failed.json
+results/snag_report.json
+results/type_smallest.json
+results/pilot_batch.json
+results/scan_progress.json
+results/test_batch_files.json
