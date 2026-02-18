@@ -35,7 +35,7 @@ USAGE:
   python3 watcher.py --settle-secs 120      # wait N seconds after mtime before touching
 """
 
-import os, sys, json, time, logging, argparse, subprocess
+import os, sys, json, time, logging, argparse, subprocess, fcntl
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, List, Tuple
@@ -53,6 +53,54 @@ INDEX_DIR_NAME  = '.plexfix'           # dot-prefixed → hidden from Plex
 MANIFEST_NAME   = 'manifest.json'
 SETTLE_SECS     = 60                   # ignore files modified within last N seconds
 MAX_LOG_LINES   = 2000                 # rolling log cap in index dir
+LOCK_FILE       = '/tmp/com.mproadmin.plexwatcher.lock'  # exclusive run lock
+
+
+# ── Run lock (prevent overlapping launchd invocations) ────────────────────────
+
+_lock_fh = None   # module-level file handle kept open for duration of run
+
+def acquire_lock() -> bool:
+    """Try to acquire an exclusive advisory lock.
+
+    Uses fcntl.LOCK_EX | fcntl.LOCK_NB on a well-known lock file.
+    If another instance of watcher.py is already running (e.g. a long
+    AV1 encode from a previous launchd tick), this returns False
+    immediately so the new invocation can exit cleanly.
+
+    The lock is automatically released when the process exits (OS closes
+    all file descriptors). We also keep the FD open in _lock_fh so it
+    isn't garbage-collected mid-run.
+    """
+    global _lock_fh
+    _lock_fh = open(LOCK_FILE, 'w')
+    try:
+        fcntl.flock(_lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _lock_fh.write(str(os.getpid()))
+        _lock_fh.flush()
+        return True
+    except OSError:
+        # Another instance holds the lock
+        _lock_fh.close()
+        _lock_fh = None
+        return False
+
+
+def release_lock() -> None:
+    """Explicitly release the lock and remove the lock file."""
+    global _lock_fh
+    if _lock_fh:
+        try:
+            fcntl.flock(_lock_fh, fcntl.LOCK_UN)
+            _lock_fh.close()
+        except OSError:
+            pass
+        _lock_fh = None
+    try:
+        os.unlink(LOCK_FILE)
+    except OSError:
+        pass
+
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -273,6 +321,20 @@ def main() -> None:
                              'library so subsequent watcher runs only probe new files.')
     args = parser.parse_args()
 
+    # ── Single-instance lock ───────────────────────────────────────────────
+    # launchd StartInterval fires every 300s regardless of whether the
+    # previous run finished. A long AV1 encode can take hours. Without
+    # the lock a new invocation would spawn concurrent ffmpeg processes
+    # competing for the same CPU threads and writing to the same .atv_tmp
+    # files — corrupting outputs and thrashing the NAS.
+    if not acquire_lock():
+        # Another instance is still running — log to stdout (captured by
+        # launchd) and exit cleanly so the next tick schedules normally.
+        print(f'{datetime.now().isoformat(timespec="seconds")} '
+              f'[INFO] plexwatcher already running — skipping this tick',
+              flush=True)
+        sys.exit(0)
+
     # ── Verify mounts are up ────────────────────────────────────────────────
     active_paths = [p for p in args.paths if os.path.ismount(p) or os.path.isdir(p)]
     if not active_paths:
@@ -391,6 +453,7 @@ def main() -> None:
              f'skipped={total_skipped}')
     if total_failed:
         log.warning(f'  {total_failed} file(s) failed — check watcher.log in index dirs')
+    release_lock()
     log.info('=' * 60)
 
 

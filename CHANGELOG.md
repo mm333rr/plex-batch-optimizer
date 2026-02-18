@@ -70,3 +70,14 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   --build-index    Fast stat()-only index population (first-run bootstrap)
   --paths PATH...  Override default [/Volumes/tv, /Volumes/movies]
   --settle-secs N  Settle threshold in seconds (default 60)
+
+### Fixed in 0.9.5 (patch — 2026-02-17)
+- **Race condition:** `StartInterval=300` fires every 5 minutes regardless of
+  whether the previous run has finished. A long AV1 encode (3+ minutes per file)
+  would cause concurrent ffmpeg instances competing for the same CPU threads and
+  writing to the same `.atv_tmp` files — corrupting outputs and thrashing the NAS.
+  Fixed with `fcntl.LOCK_EX | LOCK_NB` advisory lock on `/tmp/com.mproadmin.plexwatcher.lock`.
+  A second invocation that finds the lock held exits cleanly in ~0.1s with
+  `"plexwatcher already running — skipping this tick"`. Lock is automatically
+  released on process exit. Verified: concurrent-run test showed run2 exiting
+  in 0.1s while run1 held the lock for its full 4s duration.
