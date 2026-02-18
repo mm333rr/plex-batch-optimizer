@@ -1,0 +1,48 @@
+# Changelog
+
+All notable changes to plex-batch-optimizer are documented here.  
+Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).  
+Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+---
+
+## [0.9.0] — 2026-02-17
+
+**Status:** Feature-complete, safety-tested, snag-scanned. Batch run in progress (first full pass). Version 1.0.0 will be tagged after the batch completes successfully and `.bak` cleanup is verified.
+
+### Added
+- `media_scan.py` — Full library scanner using parallel ffprobe workers. Classifies 14,379 video files into: `direct_play`, `transcode_required`, `junk`, `sample`. Outputs structured JSON with codec, container, resolution, bitrate, subtitle stream details for every file.
+- `safety_test.py` — One-file-per-type validation harness. Runs 7 jobs (T1–T7) covering all problem types, verifies each output is ATV4K direct-play compatible. All 7 pass: T1 PGS strip, T2 VobSub strip, T3 AV1→H264, T4 DTS→EAC3, T5 AVI→MP4, T6 MJPEG strip, T7 TS→MKV.
+- `batch_optimize.py` — Production batch processor for all 2,844 problem files. Three parallel worker pools: I/O-only (12 workers), CPU-light/DTS (6 workers), CPU-heavy/AV1 (2 workers × 12 threads each). Resume-safe via `batch_completed.json`. In-place replacement with `.bak` originals.
+- `results/scan_results.json` — Complete library classification data (14,379 files).
+- `results/safety_test_result.json` — Safety test pass/fail record per job.
+- `results/snag_report.json` — Output of deep snag scan (30 files sampled per type, 150 total live ffprobe calls).
+
+### Fixed (discovered by snag scan before batch run)
+- **DTS + PGS co-presence (97% of DTS files):** Original command used `-map 0:s? -c:s copy`, which passed PGS image subtitle streams into output, causing verifier rejection. Fixed by probe-based explicit index mapping in `build_cmd`.
+- **MJPEG + PGS co-presence (17% of MJPEG files):** Same root cause and fix.
+- **AV1 + PGS co-presence (~40% of AV1 files):** Broken negative map `-map -0:s:m:codec_name:hdmv_pgs_subtitle` looked correct in docs but `:m:` filters user metadata *tags*, not codec properties. Fixed by `text_sub_maps(probe_data)`.
+- **Mixed ASS + PGS files (Boruto, Naruto, Demon Slayer series):** Original `pgs_vobsub` command dropped *all* subtitle streams (no `-map 0:s?`). Text subs (ASS/SRT) were being silently discarded. Fixed: now preserves text subs via explicit index mapping, drops only image subs.
+- **AV1 10-bit encode failure (all AV1 files):** Missing `-vf format=yuv420p` caused ffmpeg to produce 0-byte output and exit 187 when source is `yuv420p10le`. Fix confirmed in safety test T3 and Primal S02E03 re-test.
+
+### Technical Findings
+- **VideoToolbox on AMD FirePro D700:** Decode-only. No H.264/HEVC hardware encode capability. Error -12903 on `h264_videotoolbox`. All encodes fall back to `libx264`/`libx265` (CPU). 16-thread Xeon E5-1680 v2 handles this well (~37 fps on 1080p AV1 decode + libx264 encode).
+- **AVI + VBR MP3 timestamp issues:** `-fflags +genpts` required before remux. Without it, muxer rejects stream with "Can't write packet with unknown timestamp".
+- **`ffmpeg -map -0:s:m:codec_name:X` doesn't work** for codec filtering — documented as a known limitation in stream specifier parsing. Only user-set metadata tags are matched by `:m:`.
+
+### Library Audit Results
+- 14,379 total video files / 14.5 TB
+- 9,386 already ATV4K direct-play (65%)
+- 2,844 require fix (20%)
+- 2,299 thin bitrate <1.5 Mbps 1080p (quality issue, not a streaming issue)
+- 0 files exceed 600 Mbps — entire library streams without buffering
+- ~200 GB in exact duplicate files identified (safe to delete)
+
+---
+
+## [Unreleased] — planned for v1.0.0
+
+- Confirm batch_optimize.py completed all 2,844 files with 0 unexpected failures
+- `.bak` cleanup script with Plex playback verification step
+- Duplicate detection and safe-delete script for ~200 GB of identified dupes
+- Plex library refresh trigger via API after batch completes

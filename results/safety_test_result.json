@@ -1,0 +1,49 @@
+{
+  "passed": true,
+  "results": {
+    "T1": true,
+    "T2": true,
+    "T3": true,
+    "T4": true,
+    "T5": true,
+    "T6": true,
+    "T7": true
+  },
+  "jobs": [
+    {
+      "id": "T1",
+      "type": "pgs_subs",
+      "passed": true
+    },
+    {
+      "id": "T2",
+      "type": "vobsub_strip",
+      "passed": true
+    },
+    {
+      "id": "T3",
+      "type": "av1_video",
+      "passed": true
+    },
+    {
+      "id": "T4",
+      "type": "dts_audio",
+      "passed": true
+    },
+    {
+      "id": "T5",
+      "type": "avi_container",
+      "passed": true
+    },
+    {
+      "id": "T6",
+      "type": "mjpeg_attached",
+      "passed": true
+    },
+    {
+      "id": "T7",
+      "type": "ts_container",
+      "passed": true
+    }
+  ]
+}
