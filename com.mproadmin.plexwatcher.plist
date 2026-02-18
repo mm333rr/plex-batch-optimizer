@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+
+    <!-- Unique reverse-DNS label — used by launchctl to identify this agent -->
+    <key>Label</key>
+    <string>com.mproadmin.plexwatcher</string>
+
+    <!-- Full path to python3 + watcher.py -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/python3</string>
+        <string>/Users/mProAdmin/Claude Scripts and Venvs/MediaScan/watcher.py</string>
+    </array>
+
+    <!-- Run every 5 minutes (300 seconds).
+         launchd wakes the job, runs it to completion, then resets the timer.
+         Safe on NFS — no filesystem events required.                        -->
+    <key>StartInterval</key>
+    <integer>300</integer>
+
+    <!-- Also run once immediately when the agent is loaded (on login / launchctl load) -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Do NOT keep alive — this is a run-to-exit job, not a daemon -->
+    <key>KeepAlive</key>
+    <false/>
+
+    <!-- stdout captured to a persistent log (launchd rotates automatically) -->
+    <key>StandardOutPath</key>
+    <string>/Users/mProAdmin/Claude Scripts and Venvs/MediaScan/results/watcher_launchd_stdout.log</string>
+
+    <!-- stderr goes to a separate file for easy error triage -->
+    <key>StandardErrorPath</key>
+    <string>/Users/mProAdmin/Claude Scripts and Venvs/MediaScan/results/watcher_launchd_stderr.log</string>
+
+    <!-- Working directory — so relative imports and paths work correctly -->
+    <key>WorkingDirectory</key>
+    <string>/Users/mProAdmin/Claude Scripts and Venvs/MediaScan</string>
+
+    <!-- Environment: ensure PATH includes Homebrew bin so ffmpeg/ffprobe resolve -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <!-- Throttle: if watcher.py exits with non-zero in under 10 seconds,
+         launchd waits 60s before retrying (prevents crash-loop hammering NAS) -->
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+
+</dict>
+</plist>

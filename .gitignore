@@ -12,3 +12,6 @@ results/type_smallest.json
 results/pilot_batch.json
 results/scan_progress.json
 results/test_batch_files.json
+.plexfix/
+results/watcher_launchd_*.log
+results/batch_current.log

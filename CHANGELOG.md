@@ -46,3 +46,27 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `.bak` cleanup script with Plex playback verification step
 - Duplicate detection and safe-delete script for ~200 GB of identified dupes
 - Plex library refresh trigger via API after batch completes
+
+---
+
+## [0.9.5] — 2026-02-17
+
+### Added
+- `plexfix.py` — Shared core library extracted from batch_optimize.py. Provides `probe()`, `classify_probe()`, `classify_scan_record()`, `build_cmd()`, `verify()`, `text_sub_maps()`, `attachment_maps()`, `output_ext()`. Single source of truth for both batch and watcher.
+- `watcher.py` — Periodic auto-fix daemon for NFS-mounted Plex library. Runs via launchd `StartInterval=300` (every 5 min). On each run: walks volumes, compares against persisted index, classifies and fixes only new/changed files, updates `.plexfix/manifest.json` at each volume root.
+- `com.mproadmin.plexwatcher.plist` — launchd user agent definition. RunAtLoad=true, StartInterval=300, ThrottleInterval=60. Logs to results/watcher_launchd_stdout.log.
+- `install_watcher.sh` — One-command installer: `./install_watcher.sh [install|uninstall|restart|status|run-now]`.
+
+### Architecture Decisions
+- **NFS volumes require polling.** FSEvents and launchd `WatchPaths` only work on local APFS/HFS+ volumes. `/Volumes/tv` and `/Volumes/movies` are NFS mounts — launchd `StartInterval` is the macOS-native solution.
+- **Index lives in `.plexfix/` at volume root.** Dot-prefix hides it from Plex metadata scan. Contains `manifest.json` (mtime+size fingerprints for every video file), `watcher.log` (rolling, capped at 2000 lines), `errors.json`.
+- **`--build-index` fast-path.** First run on an existing library uses stat() only (no ffprobe) to populate the manifest in ~5 seconds per volume. Subsequent runs probe only new/changed files.
+- **Settle delay (default 60s).** Files modified within the last 60 seconds are skipped — prevents processing partial downloads or mid-copy files.
+- **Manifest keyed by path with mtime+size fingerprint.** File is re-processed if either changes. Previously failed files are automatically retried.
+
+### CLI (watcher.py)
+  --dry-run        Classify only, no encoding
+  --full-rescan    Reprocess all files, ignore index
+  --build-index    Fast stat()-only index population (first-run bootstrap)
+  --paths PATH...  Override default [/Volumes/tv, /Volumes/movies]
+  --settle-secs N  Settle threshold in seconds (default 60)
