@@ -35,7 +35,7 @@ USAGE:
   python3 watcher.py --settle-secs 120      # wait N seconds after mtime before touching
 """
 
-import os, sys, json, time, logging, argparse, subprocess, fcntl
+import errno, os, sys, json, time, logging, argparse, subprocess, fcntl
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, List, Tuple
@@ -104,12 +104,55 @@ def release_lock() -> None:
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
+class SafeStreamHandler(logging.StreamHandler):
+    """StreamHandler that silently swallows EIO / BrokenPipe on stdout.
+
+    When watcher.py runs under launchd with StandardOutPath redirection,
+    stdout is a pipe whose read-end may be closed or whose buffer may be
+    full. Python's logging.StreamHandler calls flush() after every emit,
+    which raises OSError(EIO) in that situation. The default logging
+    error-handler prints a traceback to stderr on every log call —
+    flooding watcher_launchd_stderr.log with thousands of lines of noise.
+
+    This subclass catches those specific I/O errors and discards them
+    silently. The file handlers (writing to the NFS index dir) are
+    unaffected and continue to receive every record.
+    """
+
+    _SWALLOWED_ERRNOS = frozenset({
+        errno.EIO,          # [Errno 5]  — pipe buffer full / read-end closed
+        errno.EPIPE,        # [Errno 32] — broken pipe
+        errno.EBADF,        # [Errno 9]  — fd closed under us
+    })
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Emit a log record, swallowing benign pipe/IO errors on stdout."""
+        try:
+            super().emit(record)
+        except OSError as exc:
+            if exc.errno in self._SWALLOWED_ERRNOS:
+                return   # launchd pipe issue — not fatal, discard silently
+            raise       # unexpected I/O error — let logging handle it normally
+
+
 def setup_logging(index_dirs: List[Path]) -> None:
-    """Log to stdout (captured by launchd) and to each index dir."""
-    handlers = [logging.StreamHandler(sys.stdout)]
+    """Log to stdout (via SafeStreamHandler) and to each index dir.
+
+    File handlers are only created for index dirs that already exist or
+    can be created. If the NFS volume is not mounted, mkdir will fail —
+    the SafeStreamHandler on stdout will still work as a fallback.
+    """
+    handlers: List[logging.Handler] = [SafeStreamHandler(sys.stdout)]
     for d in index_dirs:
-        d.mkdir(parents=True, exist_ok=True)
-        handlers.append(logging.FileHandler(d / 'watcher.log'))
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            handlers.append(logging.FileHandler(d / 'watcher.log'))
+        except (OSError, PermissionError) as exc:
+            # Volume not mounted or read-only — skip the file handler.
+            # The SafeStreamHandler above will capture everything to stdout.
+            print(f'{datetime.now().isoformat(timespec="seconds")} '
+                  f'[WARNING] Could not create log dir {d}: {exc}',
+                  flush=True)
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s [%(levelname)s] %(message)s',
@@ -131,12 +174,28 @@ def load_manifest(index_dir: Path) -> Dict:
     return {}
 
 
-def save_manifest(index_dir: Path, manifest: Dict) -> None:
-    """Atomically write manifest JSON."""
-    index_dir.mkdir(parents=True, exist_ok=True)
-    tmp = index_dir / (MANIFEST_NAME + '.tmp')
-    tmp.write_text(json.dumps(manifest, indent=2))
-    tmp.rename(index_dir / MANIFEST_NAME)
+def save_manifest(index_dir: Path, manifest: Dict) -> bool:
+    """Atomically write manifest JSON.
+
+    Returns True on success, False on failure (with a warning logged to
+    stdout via the SafeStreamHandler). Failures are non-fatal — a failed
+    save means that run's updates are lost, but the next run will
+    re-classify the same files and try again. This is far preferable to
+    aborting the entire run for all volumes.
+    """
+    try:
+        index_dir.mkdir(parents=True, exist_ok=True)
+        tmp = index_dir / (MANIFEST_NAME + '.tmp')
+        tmp.write_text(json.dumps(manifest, indent=2))
+        tmp.rename(index_dir / MANIFEST_NAME)
+        return True
+    except (OSError, PermissionError) as exc:
+        # Log to stdout — the file handler for this volume may not exist
+        # if the volume wasn't mounted when setup_logging() ran.
+        print(f'{datetime.now().isoformat(timespec="seconds")} '
+              f'[WARNING] save_manifest failed for {index_dir}: {exc}',
+              flush=True)
+        return False
 
 
 def trim_log(log_path: Path) -> None:
@@ -247,11 +306,13 @@ def process_file(path: str, dry_run: bool) -> Dict:
         return {**base_entry, 'status': 'failed', 'error': str(e)}
 
     if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or '')[-300:].strip()
+        err = (proc.stderr or proc.stdout or '')[-500:].strip()
         if tmp_path.exists():
             tmp_path.unlink()
+        err_msg = f'ffmpeg exit {proc.returncode}: {err}'
+        log.warning(f'    ❌ {Path(path).name}: {err_msg}')
         return {**base_entry, 'status': 'failed',
-                'error': f'ffmpeg exit {proc.returncode}: {err}'}
+                'error': err_msg}
 
     elapsed = time.time() - t0
 
@@ -337,9 +398,24 @@ def main() -> None:
         sys.exit(0)
 
     # ── Verify mounts are up ────────────────────────────────────────────────
-    active_paths = [p for p in args.paths if os.path.ismount(p) or os.path.isdir(p)]
+    # os.path.isdir() fallback is intentionally omitted: an unmounted NFS
+    # mountpoint is an empty root-owned directory that passes isdir() but
+    # fails any write attempt with PermissionError. ismount() is the only
+    # reliable guard. A secondary os.listdir() confirms the volume is
+    # actually readable (not just present as a stub).
+    active_paths = []
+    for p in args.paths:
+        if not os.path.ismount(p):
+            log.warning(f'  {p} is not mounted — skipping')
+            continue
+        try:
+            os.listdir(p)
+        except OSError as exc:
+            log.warning(f'  {p} mounted but not readable ({exc}) — skipping')
+            continue
+        active_paths.append(p)
     if not active_paths:
-        print('No watched paths are mounted — exiting.')
+        print('No watched paths are mounted and readable — exiting.')
         sys.exit(0)
 
     # ── Set up index dirs + logging ─────────────────────────────────────────
@@ -379,8 +455,7 @@ def main() -> None:
                     }
                     added += 1
             save_manifest(index_dir, manifest)
-            log.info(f'  --build-index: added {added:,} entries  '
-                     f'total={len(manifest):,}  → {index_dir}/{MANIFEST_NAME}')
+            log.info(f'  --build-index: added {added:,} entries  '                     f'total={len(manifest):,}  → {index_dir}/{MANIFEST_NAME}')
             log.info(f'  Re-run without --build-index to classify and fix new files.')
             continue   # skip processing loop for this volume
 
@@ -440,8 +515,11 @@ def main() -> None:
         if missing:
             log.info(f'  Pruned {len(missing)} missing files from manifest')
 
-        save_manifest(index_dir, manifest)
-        log.info(f'  Index updated: {len(manifest):,} entries → {index_dir}/{MANIFEST_NAME}')
+        saved = save_manifest(index_dir, manifest)
+        if saved:
+            log.info(f'  Index updated: {len(manifest):,} entries → {index_dir}/{MANIFEST_NAME}')
+        else:
+            log.warning(f'  Index NOT saved for {vol_path} — will retry next run')
 
         # Trim rolling log
         trim_log(index_dir / 'watcher.log')
@@ -459,4 +537,21 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception as exc:
+        # Last-resort crash handler — write to /tmp so it's always writable
+        # even if NFS volumes are down or logging handlers failed to init.
+        import traceback
+        crash_path = '/tmp/plexwatcher-crash.log'
+        ts = datetime.now().isoformat(timespec='seconds')
+        msg = f'{ts} UNHANDLED EXCEPTION in plexwatcher:\n{traceback.format_exc()}\n'
+        try:
+            with open(crash_path, 'a') as f:
+                f.write(msg)
+        except OSError:
+            pass
+        # Also print to stderr so launchd captures it in watcher_launchd_stderr.log
+        print(msg, file=sys.stderr, flush=True)
+        release_lock()
+        sys.exit(1)

@@ -6,6 +6,59 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [1.0.1] — 2026-02-21
+
+### Fixed
+
+**Bug 1 — CRITICAL: `OSError: [Errno 5] Input/output error` flooding stderr on every log call**
+- Added `SafeStreamHandler` subclass that overrides `emit()` to silently swallow
+  `errno.EIO`, `errno.EPIPE`, and `errno.EBADF` on the stdout pipe.
+- Under launchd `StandardOutPath` capture, the stdout pipe buffer fills (~65 KB)
+  and subsequent `flush()` calls raise EIO. The stock `StreamHandler` printed a
+  full traceback to stderr on every single log record — filling
+  `watcher_launchd_stderr.log` with thousands of lines of noise per run.
+- The `SafeStreamHandler` discards these benign pipe errors silently. NFS file
+  handlers are unaffected and continue to receive every record.
+- `setup_logging()` now also wraps `FileHandler` creation in try/except so a
+  missing or unmounted index dir doesn't abort logging setup.
+- **Affected:** `watcher.py` — `setup_logging()`, new `SafeStreamHandler` class.
+
+**Bug 2 — CRITICAL: `PermissionError: [Errno 13]` when NFS volume not mounted**
+- Removed `or os.path.isdir(p)` fallback from the `active_paths` mount guard.
+  An unmounted NFS mountpoint is a root-owned stub directory that passes
+  `isdir()` but fails any write attempt with `PermissionError`. Now uses
+  `os.path.ismount(p)` exclusively.
+- Added secondary readability check: `os.listdir(p)` in a try/except confirms
+  the volume is actually accessible before proceeding.
+- `save_manifest()` now wraps all I/O in try/except and returns `bool` (True =
+  saved, False = failed). Callers log a warning on failure and continue —
+  a single volume save failure no longer aborts the entire run.
+- **Affected:** `watcher.py` — `save_manifest()`, `main()` mount guard.
+
+**Bug 3 — MEDIUM: AVI files re-queued on every run (infinite retry loop)**
+- Root cause was Bug 2: `save_manifest()` was crashing before writing `failed`
+  status, so AVI files were never indexed and re-classified as `new` every run.
+  Fixed by Bug 2 patch above.
+- Additionally fixed the underlying AVI encode failure: `build_cmd()` was using
+  `-c:v copy` unconditionally, but Disney classic AVIs use `mpeg1video`,
+  `mpeg2video`, and other codecs that cannot be stream-copied into MP4.
+  Now inspects `probe_data` to determine the source video codec: copy-safe
+  codecs (`mpeg4`, `h264`, `hevc`) still use `-c:v copy`; all others
+  fall back to `-c:v libx264 -preset fast -crf 20` re-encode.
+- `process_file()` now logs ffmpeg errors directly to stdout (via `log.warning`)
+  so failures are visible in `watcher_launchd_stdout.log` rather than only in
+  the NFS-backed `watcher.log` that may be unwritable.
+- **Affected:** `plexfix.py` — `build_cmd()` AVI branch; `watcher.py` — `process_file()`.
+
+**Bug 4 — LOW: No crash-safe fallback for unhandled exceptions**
+- Added top-level `try/except Exception` around `main()` in `__main__` block.
+- On uncaught exception: logs full traceback to `/tmp/plexwatcher-crash.log`
+  (always writable, independent of NFS) and to stderr (captured by launchd),
+  calls `release_lock()`, then exits with code 1.
+- **Affected:** `watcher.py` — `__main__` block.
+
+
+
 ## [0.9.0] — 2026-02-17
 
 **Status:** Feature-complete, safety-tested, snag-scanned. Batch run in progress (first full pass). Version 1.0.0 will be tagged after the batch completes successfully and `.bak` cleanup is verified.

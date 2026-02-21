@@ -193,9 +193,31 @@ def build_cmd(issue: str, src: str, dst: str,
     if issue == 'bad_container_avi':
         # MPEG4+MP3 in AVI → MP4.
         # -fflags +genpts fixes VBR MP3 timestamp discontinuities.
+        # Some AVI files (Disney classics, DivX encodes) use mpeg1video,
+        # mpeg2video, or non-standard MPEG4 variants that cannot be
+        # stream-copied into MP4 — the muxer rejects them. Detect the
+        # video codec from probe_data and use libx264 re-encode as a
+        # fallback for any codec that isn't a clean copy-safe MPEG4.
+        vid_streams = [s for s in probe_data.get('streams', [])
+                       if s.get('codec_type') == 'video'
+                       and not s.get('disposition', {}).get('attached_pic')]
+        avi_vcodec = vid_streams[0].get('codec_name', '').lower() if vid_streams else ''
+        # These codecs are copy-safe into MP4 container
+        AVI_COPY_SAFE = {'mpeg4', 'h264', 'hevc'}
+        if avi_vcodec in AVI_COPY_SAFE:
+            video_args = ['-c:v', 'copy']
+        else:
+            # mpeg1video, mpeg2video, divx, msmpeg4v2, msmpeg4v3, wmv*, etc.
+            # must be re-encoded — libx264 is the universal fallback.
+            video_args = [
+                '-c:v', 'libx264', '-preset', 'fast', '-crf', '20',
+                '-profile:v', 'high', '-level', '4.1',
+                '-vf', 'format=yuv420p',
+                '-threads', '12',
+            ]
         return [FFMPEG, '-y', '-hide_banner', '-loglevel', 'warning',
                 '-stats', '-fflags', '+genpts', '-i', src,
-                '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
+                *video_args, '-c:a', 'aac', '-b:a', '192k',
                 '-movflags', '+faststart', dst]
 
     if issue == 'bad_container_ts':
