@@ -6,6 +6,13 @@ Provides: probe(), classify(), build_cmd(), verify(), text_sub_maps(),
           attachment_maps(), output_ext().
 
 Imported by batch_optimize.py and watcher.py.
+
+v1.0.2 (2026-03-02) fixes:
+  - text_sub_maps: exclude eia_608 / data-type subtitle codecs with no
+    valid MP4/MKV container tag (caused exit 234 on RuPaul MP4s).
+  - build_cmd/dts: '-map 0:v:0' to skip MJPEG attached_pic thumbnails.
+  - build_cmd/dts: transcode ALL audio streams, not just stream 0.
+  - build_cmd/bad_container_ts: transcode pcm_bluray → flac for MKV compat.
 """
 
 import os, json, subprocess
@@ -48,17 +55,28 @@ def probe(path: str) -> Optional[Dict]:
 def text_sub_maps(probe_data: Dict) -> List[str]:
     """Explicit -map 0:N args for text-only subtitle streams.
 
-    Image subs (PGS/VobSub) are excluded by omission.
+    Excluded codecs:
+      - IMAGE_SUBS (PGS/VobSub): not ATV4K direct-play compatible.
+      - UNSUPPORTED_SUB_CODECS: subtitle-typed streams with no valid codec
+        tag in MP4 or MKV containers. eia_608 (CEA-608 closed captions
+        embedded in broadcast recordings) causes ffmpeg exit 234 with
+        "Could not find tag for codec eia_608 in stream" when any copy
+        remux is attempted. bin_data and timed_id3 are data blobs that
+        land in the subtitle codec_type bucket on some demuxers.
 
     IMPORTANT: ffmpeg negative maps (-map -0:s:m:codec_name:X) match user
     metadata TAGS, not codec properties — they are unreliable for this purpose.
     Explicit positive index mapping is the only safe approach.
     """
+    UNSUPPORTED_SUB_CODECS = {'eia_608', 'eia_708', 'bin_data', 'timed_id3'}
     maps: List[str] = []
     for s in probe_data.get('streams', []):
-        if (s.get('codec_type') == 'subtitle' and
-                s.get('codec_name', '').lower() not in IMAGE_SUBS):
-            maps += ['-map', f"0:{s['index']}"]
+        if s.get('codec_type') != 'subtitle':
+            continue
+        cn = s.get('codec_name', '').lower()
+        if cn in IMAGE_SUBS or cn in UNSUPPORTED_SUB_CODECS:
+            continue
+        maps += ['-map', f"0:{s['index']}"]
     return maps
 
 
@@ -160,33 +178,103 @@ def build_cmd(issue: str, src: str, dst: str,
             '-stats', '-i', src]
 
     if issue == 'pgs_vobsub':
-        # Drop image subs, preserve text subs (ASS/SRT) + font attachments.
+        # Drop image subs (PGS/VobSub), preserve text subs (ASS/SRT) + fonts.
+        # Some PGS files also have DTS/TrueHD audio — transcode those to EAC3
+        # in the same pass. Using '-map 0:a -c copy' would copy DTS through and
+        # fail verify(). Use per-stream audio maps identical to the dts handler.
+        DTS_CODECS = {'dts', 'truehd', 'mlp'}
+        aud_streams = [s for s in probe_data.get('streams', [])
+                       if s.get('codec_type') == 'audio']
+        audio_maps: List[str] = []
+        audio_codec_args: List[str] = []
+        out_idx = 0
+        for s in aud_streams:
+            cn = s.get('codec_name', '').lower()
+            audio_maps += ['-map', f"0:{s['index']}"]
+            if cn in DTS_CODECS:
+                audio_codec_args += [f'-c:a:{out_idx}', 'eac3',
+                                     f'-b:a:{out_idx}', '448k']
+            else:
+                audio_codec_args += [f'-c:a:{out_idx}', 'copy']
+            out_idx += 1
         return base + [
-            '-map', '0:v', '-map', '0:a',
+            '-map', '0:v',
+            *audio_maps,
             *text_sub_maps(probe_data),
             *attachment_maps(probe_data),
-            '-c', 'copy', dst,
+            '-c:v', 'copy',
+            *audio_codec_args,
+            '-c:s', 'copy', dst,
         ]
 
     if issue == 'mjpeg':
         # 0:v:0 = primary video only (skips MJPEG attached_pic).
-        # Preserve text subs; silently drop co-present PGS.
+        # Preserve text subs (excluding eia_608 via text_sub_maps); drop PGS.
+        # Also handle any DTS/TrueHD audio in the same pass — a file can have
+        # an MJPEG attached_pic AND DTS audio simultaneously.
+        DTS_CODECS = {'dts', 'truehd', 'mlp'}
+        aud_streams = [s for s in probe_data.get('streams', [])
+                       if s.get('codec_type') == 'audio']
+        audio_maps: List[str] = []
+        audio_codec_args: List[str] = []
+        out_idx = 0
+        for s in aud_streams:
+            cn = s.get('codec_name', '').lower()
+            audio_maps += ['-map', f"0:{s['index']}"]
+            if cn in DTS_CODECS:
+                audio_codec_args += [f'-c:a:{out_idx}', 'eac3',
+                                     f'-b:a:{out_idx}', '448k']
+            else:
+                audio_codec_args += [f'-c:a:{out_idx}', 'copy']
+            out_idx += 1
         return base + [
-            '-map', '0:v:0', '-map', '0:a',
-            *text_sub_maps(probe_data),
-            *attachment_maps(probe_data),
-            '-c', 'copy', dst,
-        ]
-
-    if issue == 'dts':
-        # Copy HEVC/H264 video, transcode DTS/TrueHD → EAC3.
-        # ~97% of DTS files also have PGS — dropped via text_sub_maps.
-        return base + [
-            '-map', '0:v', '-map', '0:a',
+            '-map', '0:v:0',
+            *audio_maps,
             *text_sub_maps(probe_data),
             *attachment_maps(probe_data),
             '-c:v', 'copy',
-            '-c:a', 'eac3', '-b:a', '448k',
+            *audio_codec_args,
+            '-c:s', 'copy', dst,
+        ]
+
+    if issue == 'dts':
+        # Copy video (primary stream only — skip MJPEG attached_pic thumbnails
+        # which some encodes embed as a second video stream). Previous '-map 0:v'
+        # copied ALL video streams including MJPEG, causing verify failure
+        # "MJPEG attached_pic still present" for files like Broker (2022).
+        #
+        # Transcode ALL audio streams to eac3, not just stream 0. Files with
+        # multiple audio tracks (e.g. The Seventh Seal with 12 audio streams)
+        # had '-map 0:a -c:a eac3' but ffmpeg only applies the codec to the
+        # first stream by default when used without per-stream specifiers.
+        # Using '-c:a:0', '-c:a:1' etc. is fragile — the correct idiom is
+        # '-c:a eac3' paired with explicit per-stream mapping that excludes
+        # DTS tracks entirely, keeping only compatible audio.
+        #
+        # Strategy: map only non-DTS audio streams explicitly (copy them as-is),
+        # then map DTS streams explicitly and transcode those to eac3.
+        DTS_CODECS = {'dts', 'truehd', 'mlp'}
+        aud_streams = [s for s in probe_data.get('streams', [])
+                       if s.get('codec_type') == 'audio']
+        audio_maps: List[str] = []
+        audio_codec_args: List[str] = []
+        out_idx = 0
+        for s in aud_streams:
+            cn = s.get('codec_name', '').lower()
+            audio_maps += ['-map', f"0:{s['index']}"]
+            if cn in DTS_CODECS:
+                audio_codec_args += [f'-c:a:{out_idx}', 'eac3',
+                                     f'-b:a:{out_idx}', '448k']
+            else:
+                audio_codec_args += [f'-c:a:{out_idx}', 'copy']
+            out_idx += 1
+        return base + [
+            '-map', '0:v:0',
+            *audio_maps,
+            *text_sub_maps(probe_data),
+            *attachment_maps(probe_data),
+            '-c:v', 'copy',
+            *audio_codec_args,
             '-c:s', 'copy', dst,
         ]
 
@@ -221,8 +309,44 @@ def build_cmd(issue: str, src: str, dst: str,
                 '-movflags', '+faststart', dst]
 
     if issue == 'bad_container_ts':
-        # Drop timed_id3 data streams, copy A/V to MKV.
-        return base + ['-map', '0:v', '-map', '0:a', '-c', 'copy', dst]
+        # Remux MPEG-TS / M2TS → MKV. Drop timed_id3 / data streams.
+        # Two audio codec families need transcoding in the TS remux path:
+        #   pcm_bluray / pcm_dvd → FLAC (lossless, MKV-compatible):
+        #     MKV has no valid wav codec tag for pcm_bluray; ffmpeg exits
+        #     with "No wav codec tag found for codec pcm_bluray".
+        #   dts / truehd / mlp → EAC3 448k:
+        #     DTS is not ATV4K direct-play compatible. verify() catches it.
+        #     Must be transcoded here even though the primary issue is TS
+        #     container, not audio — 9 Songs (2004) has both pcm_bluray AND
+        #     a DTS track that must both be handled in the same pass.
+        # All other MKV-native codecs (AC3, EAC3, AAC) are copied as-is.
+        PCM_BLURAY_CODECS = {'pcm_bluray', 'pcm_dvd'}
+        DTS_CODECS = {'dts', 'truehd', 'mlp'}
+        aud_streams = [s for s in probe_data.get('streams', [])
+                       if s.get('codec_type') == 'audio']
+        audio_maps: List[str] = []
+        audio_codec_args: List[str] = []
+        out_idx = 0
+        for s in aud_streams:
+            cn = s.get('codec_name', '').lower()
+            audio_maps += ['-map', f"0:{s['index']}"]
+            if cn in PCM_BLURAY_CODECS:
+                audio_codec_args += [f'-c:a:{out_idx}', 'flac']
+            elif cn in DTS_CODECS:
+                audio_codec_args += [f'-c:a:{out_idx}', 'eac3',
+                                     f'-b:a:{out_idx}', '448k']
+            else:
+                audio_codec_args += [f'-c:a:{out_idx}', 'copy']
+            out_idx += 1
+        return base + [
+            '-map', '0:v:0',
+            *audio_maps,
+            *text_sub_maps(probe_data),
+            '-map', '-0:d',   # drop timed_id3 / bin_data / data streams
+            '-c:v', 'copy',
+            *audio_codec_args,
+            '-c:s', 'copy', dst,
+        ]
 
     if issue == 'bad_container_m4v':
         # .m4v (iPod/iTunes container) cannot hold HEVC with a valid codec tag.
@@ -273,6 +397,7 @@ def verify(src: str, dst: str, label: str = '') -> Tuple[bool, str]:
         return False, f'duration drift {in_dur:.1f}s → {out_dur:.1f}s'
 
     has_video = False
+    UNSUPPORTED_SUB_CODECS = {'eia_608', 'eia_708', 'bin_data', 'timed_id3'}
     for s in out.get('streams', []):
         ct = s.get('codec_type', '')
         cn = s.get('codec_name', '').lower()
@@ -280,7 +405,7 @@ def verify(src: str, dst: str, label: str = '') -> Tuple[bool, str]:
 
         if ct == 'video':
             if dp.get('attached_pic'):
-                return False, 'MJPEG attached_pic still present'
+                return False, f'attached_pic ({cn}) still present — thumbnail not stripped'
             has_video = True
             if cn not in ATV_VIDEO_OK:
                 return False, f'video codec {cn} not ATV4K-compatible'
@@ -290,6 +415,8 @@ def verify(src: str, dst: str, label: str = '') -> Tuple[bool, str]:
         elif ct == 'subtitle':
             if cn in IMAGE_SUBS:
                 return False, f'image subtitle {cn} still present'
+            if cn in UNSUPPORTED_SUB_CODECS:
+                return False, f'unsupported subtitle codec {cn} still present'
 
     if not has_video:
         return False, 'no video stream in output'
