@@ -341,6 +341,13 @@ def process_file(path: str, dry_run: bool) -> Dict:
              f'{"(ext changed) " if str(final_path) != path else ""}'
              f'bak={bak_path.name}')
 
+    # Remove safety backup now that encode + verify + rename all succeeded
+    try:
+        bak_path.unlink()
+        log.info(f'    removed backup {bak_path.name}')
+    except OSError as e:
+        log.warning(f'    could not remove backup {bak_path.name}: {e}')
+
     # Update manifest key if extension changed
     final_key = str(final_path)
     updated = {**base_entry,
