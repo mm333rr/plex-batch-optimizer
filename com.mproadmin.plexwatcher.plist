@@ -13,6 +13,12 @@
     <array>
         <string>/usr/local/bin/python3</string>
         <string>/Users/mProAdmin/Claude Scripts and Venvs/MediaScan/watcher.py</string>
+        <string>--boot-grace</string>
+        <string>600</string>
+        <string>--max-jobs-per-run</string>
+        <string>1</string>
+        <string>--inter-job-sleep</string>
+        <string>30</string>
     </array>
 
     <!-- Run every 5 minutes (300 seconds).

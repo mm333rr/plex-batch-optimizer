@@ -6,6 +6,48 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [1.0.2] — 2026-04-05
+
+### Fixed
+
+**Bug 1 — CRITICAL: No post-reboot cooldown caused immediate CPU spike after every reboot**
+- Root cause: `RunAtLoad=true` in the launchd plist caused watcher to fire within
+  seconds of boot, launching ffmpeg before Plex, NFS mounts, and WindowServer had
+  stabilised. This was the primary cause of the overnight CPU panic storm (38 events,
+  2 reboots between Apr 1–5 2026).
+- Added `boot_age_secs()` function that reads `kern.boottime` via sysctl to determine
+  seconds elapsed since last boot.
+- Added `--boot-grace N` CLI argument (default 600 seconds). On invocation, if the
+  system has been up less than `boot_grace` seconds, the watcher logs the remaining
+  wait time and exits cleanly. launchd retries at the next `StartInterval` tick (300s).
+- Added `import re` (required by `boot_age_secs` sysctl output parser).
+- Added three module-level constants: `BOOT_GRACE_DEFAULT=600`,
+  `MAX_JOBS_PER_RUN_DEFAULT=1`, `INTER_JOB_SLEEP_DEFAULT=30`.
+- **Affected:** `watcher.py` — docstring, imports, constants, new `boot_age_secs()`,
+  new argparse args, boot-grace block in `main()`.
+
+**Bug 2 — HIGH: No ffmpeg job cap — watcher encoded files back-to-back indefinitely**
+- Root cause: A single watcher run would process every file in `to_process`
+  sequentially with no pause between jobs. The run-lock (`fcntl.LOCK_EX`) prevented
+  concurrent watcher invocations, but one run could encode for hours, sustaining
+  >90% CPU. plex-guardian could SIGSTOP individual ffmpeg PIDs but the watcher
+  immediately spawned a new one on the next file.
+- Added `--max-jobs-per-run N` (default 1). Watcher processes at most N files per
+  5-minute tick. Remaining files are deferred and logged. The launchd StartInterval
+  naturally throttles the overall encode rate to at most 12 jobs/hour.
+- Added `--inter-job-sleep S` (default 30 seconds). Watcher sleeps S seconds between
+  encode jobs, giving plex-guardian and Plex breathing room before the next CPU spike.
+- Only real encode attempts (`fixed` or `failed` status) count toward the job cap.
+  `clean`, `dry-run`, and `indexed` files are not counted.
+- **Affected:** `watcher.py` — new argparse args, `jobs_this_run` counter and cap/sleep
+  block in the process loop.
+
+### Changed
+- `com.mproadmin.plexwatcher.plist` — Added `--boot-grace 600`,
+  `--max-jobs-per-run 1`, `--inter-job-sleep 30` to `ProgramArguments`.
+
+---
+
 ## [1.0.1] — 2026-02-21
 
 ### Fixed

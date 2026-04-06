@@ -28,14 +28,17 @@ INDEX FORMAT (.plexfix/manifest.json):
   }
 
 USAGE:
-  python3 watcher.py                        # normal run
-  python3 watcher.py --dry-run              # classify only, no encoding
-  python3 watcher.py --full-rescan          # reprocess every file (ignore index)
-  python3 watcher.py --paths /Volumes/tv    # watch specific paths
-  python3 watcher.py --settle-secs 120      # wait N seconds after mtime before touching
+  python3 watcher.py                          # normal run
+  python3 watcher.py --dry-run                # classify only, no encoding
+  python3 watcher.py --full-rescan            # reprocess every file (ignore index)
+  python3 watcher.py --paths /Volumes/tv      # watch specific paths
+  python3 watcher.py --settle-secs 120        # wait N seconds after mtime before touching
+  python3 watcher.py --boot-grace 600         # skip run if system booted <N secs ago (default 600)
+  python3 watcher.py --max-jobs-per-run 1     # max ffmpeg jobs per tick (default 1)
+  python3 watcher.py --inter-job-sleep 30     # seconds between encode jobs (default 30)
 """
 
-import errno, os, sys, json, time, logging, argparse, subprocess, fcntl
+import errno, os, re, sys, json, time, logging, argparse, subprocess, fcntl
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, List, Tuple
@@ -54,6 +57,9 @@ MANIFEST_NAME   = 'manifest.json'
 SETTLE_SECS     = 60                   # ignore files modified within last N seconds
 MAX_LOG_LINES   = 2000                 # rolling log cap in index dir
 LOCK_FILE       = '/tmp/com.mproadmin.plexwatcher.lock'  # exclusive run lock
+BOOT_GRACE_DEFAULT     = 600           # seconds after boot before encoding begins
+MAX_JOBS_PER_RUN_DEFAULT = 1           # max ffmpeg jobs per launchd tick
+INTER_JOB_SLEEP_DEFAULT  = 30         # seconds to sleep between encode jobs
 
 
 # ── Run lock (prevent overlapping launchd invocations) ────────────────────────
@@ -100,6 +106,28 @@ def release_lock() -> None:
         os.unlink(LOCK_FILE)
     except OSError:
         pass
+
+
+# ── Boot age check ─────────────────────────────────────────────────────────────
+
+def boot_age_secs() -> float:
+    """Return seconds elapsed since the last system boot via kern.boottime sysctl.
+
+    Parses the sysctl output:  { sec = 1775435301, usec = 515163 } ...
+    Returns float('inf') if the value cannot be determined so that the caller
+    conservatively allows the run to proceed.
+    """
+    try:
+        r = subprocess.run(
+            ['sysctl', '-n', 'kern.boottime'],
+            capture_output=True, text=True, timeout=5
+        )
+        m = re.search(r'sec\s*=\s*(\d+)', r.stdout)
+        if m:
+            return time.time() - int(m.group(1))
+    except Exception:
+        pass
+    return float('inf')  # unknown → assume old boot, allow run
 
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -388,6 +416,18 @@ def main() -> None:
                         help='Fast first-run mode: stat() every file and record as '
                              '"indexed" without probing. Run once on an existing clean '
                              'library so subsequent watcher runs only probe new files.')
+    parser.add_argument('--boot-grace',   type=int, default=BOOT_GRACE_DEFAULT,
+                        help=f'Skip run if system booted less than N seconds ago '
+                             f'(default {BOOT_GRACE_DEFAULT}). Prevents immediate '
+                             f'post-reboot CPU spike. Set 0 to disable.')
+    parser.add_argument('--max-jobs-per-run', type=int, default=MAX_JOBS_PER_RUN_DEFAULT,
+                        help=f'Max ffmpeg encode jobs per watcher tick '
+                             f'(default {MAX_JOBS_PER_RUN_DEFAULT}). Remaining files '
+                             f'deferred to next launchd interval.')
+    parser.add_argument('--inter-job-sleep', type=int, default=INTER_JOB_SLEEP_DEFAULT,
+                        help=f'Seconds to sleep between encode jobs '
+                             f'(default {INTER_JOB_SLEEP_DEFAULT}). Gives plex-guardian '
+                             f'breathing room between CPU spikes.')
     args = parser.parse_args()
 
     # ── Single-instance lock ───────────────────────────────────────────────
@@ -403,6 +443,25 @@ def main() -> None:
               f'[INFO] plexwatcher already running — skipping this tick',
               flush=True)
         sys.exit(0)
+
+    # ── Boot grace period ───────────────────────────────────────────────────
+    # launchd RunAtLoad=true fires this script within seconds of boot.
+    # Starting ffmpeg immediately after boot races with Plex, NFS mounts,
+    # and WindowServer stabilisation — the primary cause of the overnight
+    # CPU panic storm. Wait until the system has been up for boot_grace secs.
+    if args.boot_grace > 0:
+        age = boot_age_secs()
+        if age < args.boot_grace:
+            remaining = int(args.boot_grace - age)
+            print(
+                f'{datetime.now().isoformat(timespec="seconds")} [INFO] '
+                f'Boot grace active: system up {age:.0f}s, '
+                f'grace={args.boot_grace}s, waiting {remaining}s. '
+                f'Exiting — launchd will retry in {300}s.',
+                flush=True
+            )
+            release_lock()
+            sys.exit(0)
 
     # ── Verify mounts are up ────────────────────────────────────────────────
     # os.path.isdir() fallback is intentionally omitted: an unmounted NFS
@@ -480,6 +539,7 @@ def main() -> None:
         else:
             log.info(f'  {len(to_process)} files to process')
 
+        jobs_this_run = 0
         for path in to_process:
             total_new += 1
             result = process_file(path, args.dry_run)
@@ -498,6 +558,27 @@ def main() -> None:
             if status == 'clean':       total_clean  += 1
             elif status in ('fixed', 'dry-run'): total_fixed  += 1
             elif status == 'failed':    total_failed += 1
+
+            # ── Job cap + inter-job sleep ──────────────────────────────
+            # Limit ffmpeg jobs per launchd tick to prevent sustained CPU
+            # saturation. The 5-min StartInterval naturally throttles the
+            # overall encode rate. Sleep between jobs to give plex-guardian
+            # and Plex breathing room before the next CPU spike.
+            if status in ('fixed', 'failed'):  # only count real encode attempts
+                jobs_this_run += 1
+                if jobs_this_run >= args.max_jobs_per_run:
+                    remaining_files = len(to_process) - to_process.index(path) - 1
+                    if remaining_files > 0:
+                        log.info(
+                            f'  Job cap reached ({args.max_jobs_per_run}/run) — '
+                            f'{remaining_files} file(s) deferred to next tick'
+                        )
+                    break
+                # Inter-job sleep (only if more jobs remain and cap not hit)
+                next_idx = to_process.index(path) + 1
+                if next_idx < len(to_process) and args.inter_job_sleep > 0:
+                    log.info(f'  Sleeping {args.inter_job_sleep}s between jobs...')
+                    time.sleep(args.inter_job_sleep)
 
         # ── Update manifest ────────────────────────────────────────────────
         # Also add unprocessed files to manifest so they're indexed as 'clean'
