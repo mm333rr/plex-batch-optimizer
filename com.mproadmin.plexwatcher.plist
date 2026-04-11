@@ -54,6 +54,16 @@
         <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
 
+    <!-- Deprioritize entire process tree (watcher + ffmpeg children).
+         Background QoS yields CPU to foreground work automatically.    -->
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <!-- nice 5 = slightly below default (0). Plex and plex-guardian
+         always win CPU contention; encodes still complete, just slower. -->
+    <key>Nice</key>
+    <integer>5</integer>
+
     <!-- Throttle: if watcher.py exits with non-zero in under 10 seconds,
          launchd waits 60s before retrying (prevents crash-loop hammering NAS) -->
     <key>ThrottleInterval</key>
