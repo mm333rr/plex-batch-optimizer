@@ -12,7 +12,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/usr/local/bin/python3</string>
-        <string>/Users/mProAdmin/Claude Scripts and Venvs/MediaScan/watcher.py</string>
+        <string>/Users/mProAdmin/Claude Scripts and Venvs/plex-batch-optimizer/watcher.py</string>
         <string>--boot-grace</string>
         <string>600</string>
         <string>--max-jobs-per-run</string>
@@ -37,15 +37,15 @@
 
     <!-- stdout captured to a persistent log (launchd rotates automatically) -->
     <key>StandardOutPath</key>
-    <string>/Users/mProAdmin/Claude Scripts and Venvs/MediaScan/results/watcher_launchd_stdout.log</string>
+    <string>/Users/mProAdmin/Claude Scripts and Venvs/plex-batch-optimizer/results/watcher_launchd_stdout.log</string>
 
     <!-- stderr goes to a separate file for easy error triage -->
     <key>StandardErrorPath</key>
-    <string>/Users/mProAdmin/Claude Scripts and Venvs/MediaScan/results/watcher_launchd_stderr.log</string>
+    <string>/Users/mProAdmin/Claude Scripts and Venvs/plex-batch-optimizer/results/watcher_launchd_stderr.log</string>
 
     <!-- Working directory — so relative imports and paths work correctly -->
     <key>WorkingDirectory</key>
-    <string>/Users/mProAdmin/Claude Scripts and Venvs/MediaScan</string>
+    <string>/Users/mProAdmin/Claude Scripts and Venvs/plex-batch-optimizer</string>
 
     <!-- Environment: ensure PATH includes Homebrew bin so ffmpeg/ffprobe resolve -->
     <key>EnvironmentVariables</key>
