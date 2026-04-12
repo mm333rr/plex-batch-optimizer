@@ -236,7 +236,7 @@ def build_cmd(issue: str, src: str, tmp: str,
             '-vf', 'format=yuv420p',
             '-c:v', 'libx264', '-preset', 'fast', '-crf', '20',
             '-profile:v', 'high', '-level', '4.1',
-            '-threads', '12',
+            '-threads', '8',   # 8/16 cores — leaves headroom for 2-3 simultaneous Plex transcodes
             '-c:a', 'copy', '-c:s', 'copy',
             '-movflags', '+faststart', tmp,
         ]
@@ -358,7 +358,10 @@ def process_file(r: Dict, issue: str, args: argparse.Namespace,
     log.info(f'  cmd: {" ".join(cmd[-6:])}')   # log last 6 args (output side)
     t0 = time.time()
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=7200,
+            preexec_fn=lambda: os.nice(5),  # ffmpeg nice→15 (plist base 10 + 5); standalone runs start at nice 5
+        )
     except subprocess.TimeoutExpired:
         log.error(f'[{label}] TIMEOUT after 2h — original untouched')
         tmp_path.unlink(missing_ok=True)

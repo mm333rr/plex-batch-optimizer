@@ -6,6 +6,17 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [1.0.3] — 2026-04-12
+
+### Fixed
+- `batch_optimize.py` `-threads 12` → `8` — leaves 8 cores for Plex when
+  batch encoding alongside simultaneous transcodes + Music Analyzers.
+- Added `preexec_fn=lambda: os.nice(5)` to `subprocess.run` ffmpeg calls in
+  both `watcher.py` and `batch_optimize.py` — ensures ffmpeg starts at nice 15
+  (plist base 10 + 5 increment) regardless of parent process nice drift.
+- `com.mproadmin.plexwatcher.plist` `Nice` 5 → 10 — watcher.py now starts at
+  nice 10; all child ffmpeg processes inherit and reach nice 15 via preexec_fn.
+
 ## [1.0.2] — 2026-04-05
 
 ### Fixed

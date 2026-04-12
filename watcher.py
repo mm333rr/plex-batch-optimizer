@@ -327,7 +327,10 @@ def process_file(path: str, dry_run: bool) -> Dict:
     cmd = build_cmd(issue, path, str(tmp_path), probe_data=probe_data)
     t0  = time.time()
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=7200,
+            preexec_fn=lambda: os.nice(5),  # ffmpeg nice→15 (plist base 10 + 5)
+        )
     except subprocess.TimeoutExpired:
         return {**base_entry, 'status': 'failed', 'error': 'encode timeout'}
     except Exception as e:

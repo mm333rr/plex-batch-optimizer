@@ -59,10 +59,12 @@
     <key>ProcessType</key>
     <string>Background</string>
 
-    <!-- nice 5 = slightly below default (0). Plex and plex-guardian
-         always win CPU contention; encodes still complete, just slower. -->
+    <!-- nice 10 = well below default (0). Leaves ample headroom for
+         2-3 simultaneous Plex transcodes. ffmpeg subprocess additionally
+         calls os.nice(5) bringing effective ffmpeg nice to 10 even if
+         launchd agent priority drifts. -->
     <key>Nice</key>
-    <integer>5</integer>
+    <integer>10</integer>
 
     <!-- Throttle: if watcher.py exits with non-zero in under 10 seconds,
          launchd waits 60s before retrying (prevents crash-loop hammering NAS) -->
