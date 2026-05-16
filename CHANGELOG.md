@@ -1,5 +1,14 @@
 # Changelog
 
+## [merged] -- 2026-05-16
+### Merged from plex-optimizer
+- mm333rr/plex-optimizer was a parallel fork tracking the same ATV4K
+  direct-play pipeline. plex-batch-optimizer is strictly more evolved
+  (v1.0.3 CPU tuning, nice levels, expanded watcher). plex-optimizer
+  archived. This repo is now the sole canonical version.
+
+
+
 All notable changes to plex-batch-optimizer are documented here.  
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).  
 Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
