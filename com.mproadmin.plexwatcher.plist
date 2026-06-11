@@ -1,75 +1,46 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-
-    <!-- Unique reverse-DNS label — used by launchctl to identify this agent -->
-    <key>Label</key>
-    <string>com.mproadmin.plexwatcher</string>
-
-    <!-- Full path to python3 + watcher.py -->
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/local/bin/python3</string>
-        <string>/Users/mProAdmin/Claude Scripts and Venvs/plex-batch-optimizer/watcher.py</string>
-        <string>--boot-grace</string>
-        <string>600</string>
-        <string>--max-jobs-per-run</string>
-        <string>1</string>
-        <string>--inter-job-sleep</string>
-        <string>30</string>
-    </array>
-
-    <!-- Run every 5 minutes (300 seconds).
-         launchd wakes the job, runs it to completion, then resets the timer.
-         Safe on NFS — no filesystem events required.                        -->
-    <key>StartInterval</key>
-    <integer>300</integer>
-
-    <!-- Also run once immediately when the agent is loaded (on login / launchctl load) -->
-    <key>RunAtLoad</key>
-    <true/>
-
-    <!-- Do NOT keep alive — this is a run-to-exit job, not a daemon -->
-    <key>KeepAlive</key>
-    <false/>
-
-    <!-- stdout captured to a persistent log (launchd rotates automatically) -->
-    <key>StandardOutPath</key>
-    <string>/Users/mProAdmin/Claude Scripts and Venvs/plex-batch-optimizer/results/watcher_launchd_stdout.log</string>
-
-    <!-- stderr goes to a separate file for easy error triage -->
-    <key>StandardErrorPath</key>
-    <string>/Users/mProAdmin/Claude Scripts and Venvs/plex-batch-optimizer/results/watcher_launchd_stderr.log</string>
-
-    <!-- Working directory — so relative imports and paths work correctly -->
-    <key>WorkingDirectory</key>
-    <string>/Users/mProAdmin/Claude Scripts and Venvs/plex-batch-optimizer</string>
-
-    <!-- Environment: ensure PATH includes Homebrew bin so ffmpeg/ffprobe resolve -->
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-    </dict>
-
-    <!-- Deprioritize entire process tree (watcher + ffmpeg children).
-         Background QoS yields CPU to foreground work automatically.    -->
-    <key>ProcessType</key>
-    <string>Background</string>
-
-    <!-- nice 10 = well below default (0). Leaves ample headroom for
-         2-3 simultaneous Plex transcodes. ffmpeg subprocess additionally
-         calls os.nice(5) bringing effective ffmpeg nice to 10 even if
-         launchd agent priority drifts. -->
-    <key>Nice</key>
-    <integer>10</integer>
-
-    <!-- Throttle: if watcher.py exits with non-zero in under 10 seconds,
-         launchd waits 60s before retrying (prevents crash-loop hammering NAS) -->
-    <key>ThrottleInterval</key>
-    <integer>60</integer>
-
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<key>KeepAlive</key>
+	<false/>
+	<key>Label</key>
+	<string>com.mproadmin.plexwatcher</string>
+	<key>Nice</key>
+	<integer>10</integer>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/python3</string>
+		<string>/Users/mProAdmin/Claude Scripts and Venvs/plex-batch-optimizer/watcher.py</string>
+		<string>--boot-grace</string>
+		<string>600</string>
+		<string>--max-jobs-per-run</string>
+		<string>1</string>
+		<string>--inter-job-sleep</string>
+		<string>30</string>
+		<string>--paths</string>
+		<string>/Volumes/tv</string>
+		<string>/Volumes/movies</string>
+		<string>/Volumes/adult</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/Users/mProAdmin/Claude Scripts and Venvs/plex-batch-optimizer/results/watcher_launchd_stderr.log</string>
+	<key>StandardOutPath</key>
+	<string>/Users/mProAdmin/Claude Scripts and Venvs/plex-batch-optimizer/results/watcher_launchd_stdout.log</string>
+	<key>StartInterval</key>
+	<integer>300</integer>
+	<key>ThrottleInterval</key>
+	<integer>60</integer>
+	<key>WorkingDirectory</key>
+	<string>/Users/mProAdmin/Claude Scripts and Venvs/plex-batch-optimizer</string>
 </dict>
 </plist>
