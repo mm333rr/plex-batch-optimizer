@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 FFMPEG  = '/usr/local/bin/ffmpeg'
-FFPROBE = 'ffprobe'
+FFPROBE = '/usr/local/bin/ffprobe'
 
 # ATV4K-compatible codec sets
 ATV_VIDEO_OK = {'h264', 'hevc', 'mpeg4', 'vp9'}
@@ -176,6 +176,13 @@ def build_cmd(issue: str, src: str, dst: str,
 
     base = [FFMPEG, '-y', '-hide_banner', '-loglevel', 'warning',
             '-stats', '-i', src]
+
+    if issue == 'faststart':
+        # Otherwise ATV4K-clean but moov atom is at the back; remux to move it
+        # to the front (QuickLook + streaming). Map real streams only so a stray
+        # attached_pic / image sub does not trip verify().
+        return base + ['-map', '0:v:0', '-map', '0:a?', *text_sub_maps(probe_data),
+                       '-c', 'copy', '-movflags', '+faststart', dst]
 
     if issue == 'pgs_vobsub':
         # Drop image subs (PGS/VobSub), preserve text subs (ASS/SRT) + fonts.
