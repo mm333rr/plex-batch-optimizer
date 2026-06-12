@@ -282,6 +282,34 @@ def needs_processing(path: str, manifest: Dict, full_rescan: bool,
 
 # ── Single-file processor ──────────────────────────────────────────────────────
 
+def is_faststart(path: str) -> bool:
+    """True if an MP4/MOV has its moov atom before mdat (QuickLook + stream friendly)."""
+    import struct
+    try:
+        with open(path, "rb") as f:
+            order = []
+            while True:
+                h = f.read(8)
+                if len(h) < 8:
+                    break
+                size = struct.unpack(">I", h[:4])[0]
+                typ = h[4:8].decode("latin1", "replace")
+                hdr = 8
+                if size == 1:
+                    size = struct.unpack(">Q", f.read(8))[0]
+                    hdr = 16
+                if typ in ("moov", "mdat"):
+                    order.append(typ)
+                    if "moov" in order and "mdat" in order:
+                        break
+                if size == 0:
+                    break
+                f.seek(size - hdr, 1)
+        return bool(order) and order[0] == "moov"
+    except Exception:
+        return True
+
+
 def process_file(path: str, dry_run: bool) -> Dict:
     """Classify, optionally fix, and return an updated manifest entry."""
     size, mtime = fingerprint(path)
@@ -302,6 +330,8 @@ def process_file(path: str, dry_run: bool) -> Dict:
 
     # ── Classify ─────────────────────────────────────────────────────────────
     issue = classify_probe(probe_data)
+    if issue is None and Path(path).suffix.lower() in ('.mp4', '.mov') and not is_faststart(path):
+        issue = 'faststart'
     base_entry['issue'] = issue
 
     if issue is None:
