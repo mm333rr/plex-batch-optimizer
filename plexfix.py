@@ -40,11 +40,14 @@ VIDEO_EXTS = {
 
 def probe(path: str) -> Optional[Dict]:
     """Run ffprobe on path, return parsed JSON or None on failure."""
-    r = subprocess.run(
-        [FFPROBE, '-v', 'quiet', '-print_format', 'json',
-         '-show_streams', '-show_format', path],
-        capture_output=True, text=True, timeout=30
-    )
+    try:
+        r = subprocess.run(
+            [FFPROBE, '-v', 'quiet', '-print_format', 'json',
+             '-show_streams', '-show_format', path],
+            capture_output=True, text=True, timeout=30
+        )
+    except subprocess.TimeoutExpired:
+        return None  # hung probe (NFS stall / corrupt file) - treat as probe failure
     try:
         return json.loads(r.stdout) if r.returncode == 0 else None
     except Exception:
